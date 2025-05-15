@@ -4,11 +4,14 @@ import datetime
 import cv2 as cv
 import os
 import argparse # コマンドライン引数処理のため
-from discord_webhook import DiscordWebhook
+# from discord_webhook import DiscordWebhook # こちらはFastAPI経由なので不要
+import requests # API呼び出しに必要
+
+#https://qiita.com/hase-k0x01/items/acd0d9159a9001ebfbd3
 
 # --- 設定項目 ---
 SAVE_DIR = './image/'
-FN_SUFFIX = 'motion_detect.jpg'
+FN_SUFFIX = 'motion_detect.jpg' # 保存される画像の接尾辞 (例: motion_detect.jpg)
 CAMERA_INDEX = 0
 FRAME_WIDTH = 640
 FRAME_HEIGHT = 480
@@ -19,6 +22,8 @@ ACCUMULATE_WEIGHT = 0.5
 KEY_SET_BACKGROUND = ord('s') # GUIモード時のみ有効
 KEY_QUIT = 27                 # GUIモード時のみ有効
 HEADLESS_LOOP_DELAY = 0.1     # ヘッドレスモード時のループ遅延（秒）
+API_ENDPOINT_URL = "http://127.0.0.1:8000/send_image/" # FastAPIサーバーのエンドポイント
+NOTIFICATION_COOLDOWN_SECONDS = 60 # 通知のクールダウンタイム（秒）
 # --- ここまで設定項目 ---
 
 def ensure_dir(directory):
@@ -26,22 +31,50 @@ def ensure_dir(directory):
         os.makedirs(directory)
         print(f"Created directory: {directory}")
 
+def send_image_to_discord_api(image_path: str, image_filename: str):
+    """
+    指定された画像をFastAPI経由でDiscordに送信する関数。
+    """
+    if not os.path.exists(image_path):
+        print(f"エラー: 通知する画像ファイルが見つかりません: {image_path}")
+        return False
+    try:
+        with open(image_path, "rb") as f:
+            # APIサーバー側が 'file' というキーでファイルを受け取ることを期待
+            files = {"file": (image_filename, f, "image/jpeg")} 
+            response = requests.post(API_ENDPOINT_URL, files=files, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"Discordへの画像送信成功: {response.json().get('message', '成功')}")
+            return True
+        else:
+            print(f"Discordへの画像送信失敗: ステータスコード {response.status_code}")
+            try:
+                print(f"エラー詳細: {response.json()}")
+            except requests.exceptions.JSONDecodeError:
+                print(f"エラー詳細 (テキスト): {response.text}")
+            return False
+    except requests.exceptions.RequestException as e:
+        print(f"DiscordへのAPIリクエスト中にエラーが発生しました: {e}")
+        return False
+    except Exception as e:
+        print(f"画像送信中に予期せぬエラーが発生しました: {e}")
+        return False
+    
 def main():
     global avg_background
     avg_background = None
     motion_detection_enabled = False
 
-    # --- コマンドライン引数の解析 ---
     parser = argparse.ArgumentParser(description="OpenCV Motion Detector")
     parser.add_argument(
         '--gui',
-        action='store_true',  # 指定されると display_gui が True になる
+        action='store_true',
         dest='display_gui',
         help="Enable GUI display"
     )
-    parser.set_defaults(display_gui=False) # デフォルトはGUI表示OFF (ヘッドレスモード)
+    parser.set_defaults(display_gui=False)
     args = parser.parse_args()
-    # --- ここまでコマンドライン引数の解析 ---
 
     ensure_dir(SAVE_DIR)
 
@@ -55,8 +88,8 @@ def main():
 
     print("Starting motion detection module.")
     if args.display_gui:
-        print(f"GUI display enabled. Press '{chr(KEY_SET_BACKGROUND)}' in the window to set/reset background.")
-        print(f"Press 'Esc' in the window to quit.")
+        print(f"GUI display enabled. Press '{chr(KEY_SET_BACKGROUND)}' to set/reset background.")
+        print(f"Press 'Esc' to quit.")
     else:
         print("GUI display disabled (headless mode default).")
         print("Setting initial background automatically...")
@@ -71,6 +104,9 @@ def main():
             cap.release()
             return
 
+    # 最後に通知した時刻を記録する変数を初期化
+    last_notification_time = 0
+
     try:
         while True:
             ret, frame = cap.read()
@@ -83,7 +119,6 @@ def main():
             
             gray = cv.cvtColor(frame, cv.COLOR_BGR2GRAY)
             
-            # GUIモードで背景未設定の場合のメッセージ (実際にはこの分岐には入りにくい)
             if avg_background is None and args.display_gui:
                 cv.putText(frame, f"Press '{chr(KEY_SET_BACKGROUND)}' to set background", (25, 80),
                            cv.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
@@ -94,41 +129,55 @@ def main():
                 motion_factor = thresh.sum() / (thresh.size * DELTA_MAX)
                 motion_factor_str = f'{motion_factor:.08f}'
                 
-                if args.display_gui: # GUIが有効な場合のみフレームにモーションファクターを描画
+                if args.display_gui:
                     cv.putText(frame, motion_factor_str, (25, FRAME_HEIGHT - 20),
                                cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-
-                if motion_detection_enabled and motion_factor > MOTION_FACTOR_TH:
-                    f_name = dt_now.strftime('%Y%m%d%H%M%S%f') + "_" + FN_SUFFIX
-                    save_path = os.path.join(SAVE_DIR, f_name)
                     
-                    # 保存するフレームには日付を描画 (GUIの有無に関わらず)
-                    frame_to_save = frame.copy()
-                    cv.putText(frame_to_save, dt_format_string, (25, 50),
-                               cv.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
-                    cv.imwrite(save_path, frame_to_save)
-                    print(f"DETECTED: {f_name} (Factor: {motion_factor_str})")
-                
-                if args.display_gui: # GUIが有効な場合のみ輪郭を描画
+                if motion_detection_enabled and motion_factor > MOTION_FACTOR_TH:
+                    # --- クールダウンタイムのチェック ---
+                    current_time_seconds = time.time()
+                    if (current_time_seconds - last_notification_time) > NOTIFICATION_COOLDOWN_SECONDS:
+                        # モーション検知かつクールダウンタイム経過
+                        # ファイル名はタイムスタンプをベースにし、設定された接尾辞（拡張子含む）を付加
+                        f_name_base = dt_now.strftime('%Y%m%d%H%M%S%f')
+                        actual_filename_to_save = f_name_base + "_" + FN_SUFFIX 
+                        save_path = os.path.join(SAVE_DIR, actual_filename_to_save)
+                        
+                        frame_to_save = frame.copy()
+                        cv.putText(frame_to_save, dt_format_string, (25, 50),
+                                   cv.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+                        
+                        if cv.imwrite(save_path, frame_to_save):
+                            print(f"DETECTED & SAVED: {actual_filename_to_save} (Factor: {motion_factor_str})")
+
+                            # --- Discordに通知 (API経由) ---
+                            # APIに渡すファイル名は、実際に保存したファイル名が良い
+                            if send_image_to_discord_api(save_path, actual_filename_to_save):
+                                last_notification_time = current_time_seconds # 通知成功なら最終通知時刻を更新
+                        else:
+                            print(f"エラー: 画像の保存に失敗しました: {save_path}")
+                    # else: # クールダウン中は通知をスキップ (ログ出力は任意)
+                        # print(f"Motion detected (Factor: {motion_factor_str}) but notification skipped due to cooldown.")
+
+                if args.display_gui:
                     contours, _ = cv.findContours(thresh.copy(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
                     cv.drawContours(frame, contours, -1, (0, 255, 0), 2)
 
             if args.display_gui:
                 cv.imshow('Motion Detection Camera', frame)
-                key = cv.waitKey(1) & 0xFF # GUIモードでは短い待機時間でキー入力をチェック
+                key = cv.waitKey(1) & 0xFF
                 
                 if key == KEY_QUIT:
                     print("Exit key pressed.")
                     break
                 elif key == KEY_SET_BACKGROUND:
                     avg_background = gray.copy().astype("float")
-                    motion_detection_enabled = True # 再度有効化
+                    motion_detection_enabled = True
                     print(f"Background re-set at {dt_format_string}. Motion detection enabled.")
             else:
-                # ヘッドレスモード時は、ループの最後に短いスリープを入れる
                 time.sleep(HEADLESS_LOOP_DELAY)
 
-    except KeyboardInterrupt: # Ctrl+C で終了できるようにする
+    except KeyboardInterrupt:
         print("Interrupted by user (Ctrl+C). Exiting...")
     finally:
         print("Exiting motion detection module.")
