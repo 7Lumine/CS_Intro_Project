@@ -1,0 +1,17 @@
+# requirements.txt
+
+# Motion Detector (motion_detector.py) で主に使用
+opencv-python         # OpenCVライブラリ (cv2)
+requests              # HTTPリクエスト用 (API呼び出し)
+
+discord.py            # Discord Botライブラリ
+fastapi               # 高速なAPIフレームワーク
+uvicorn[standard]     # ASGIサーバー (FastAPIの実行に必要、[standard]で標準的な依存関係も含む)
+python-multipart      # FastAPIでファイルアップロードを扱うためのライブラリ
+Pillow                # 画像処理ライブラリ (discord.pyが内部で利用することがある)
+
+# 両方、または設定読み込みで共通して使用する可能性あり
+python-dotenv         # .envファイルから環境変数を読み込むため (推奨)
+
+# その他、プロジェクトによっては必要になる可能性があるもの (今回は直接出てきていない)
+# numpy               # OpenCVが依存しているが、opencv-pythonをインストールすれば通常一緒に入る
