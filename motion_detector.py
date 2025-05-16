@@ -40,7 +40,7 @@ def send_file_to_discord_api(file_path: str, filename_on_discord: str, mime_type
     静止画の場合は mime_type="image/jpeg" などとする。
     """
     if not os.path.exists(file_path):
-        print(f"エラー: 通知するファイルが見つかりません: {file_path}")
+        print(f"Error: Notification file not found: {file_path}")
         return False
     try:
         with open(file_path, "rb") as f:
@@ -49,33 +49,33 @@ def send_file_to_discord_api(file_path: str, filename_on_discord: str, mime_type
             response = requests.post(API_ENDPOINT_URL, files=files, timeout=30)
 
         if response.status_code == 200:
-            print(f"Discordへのファイル送信成功: {response.json().get('message', '成功')}")
+            print(f"File successfully sent to Discord: {response.json().get('message', 'Success')}")
             return True
         else:
-            print(f"Discordへのファイル送信失敗: ステータスコード {response.status_code}")
+            print(f"Failed to send file to Discord: Status code {response.status_code}")
             try:
-                print(f"エラー詳細: {response.json()}")
+                print(f"Error details: {response.json()}")
             except requests.exceptions.JSONDecodeError:
-                print(f"エラー詳細 (テキスト): {response.text}")
+                print(f"Error details (text): {response.text}")
             return False
     except requests.exceptions.RequestException as e:
-        print(f"DiscordへのAPIリクエスト中にエラーが発生しました: {e}")
+        print(f"Error occurred during API request to Discord: {e}")
         return False
     except Exception as e:
-        print(f"ファイル送信中に予期せぬエラーが発生しました: {e}")
+        print(f"Unexpected error occurred during file transfer: {e}")
         return False
-    
+
 def main():
     global avg_background
     avg_background = None
     motion_detection_enabled = False
 
-    parser = argparse.ArgumentParser(description="OpenCV Motion Detector with Video Clips")
+    parser = argparse.ArgumentParser(description="OpenCV Motion Detector with MP4 Video Clips")
     parser.add_argument('--gui', action='store_true', dest='display_gui', help="Enable GUI display")
     parser.set_defaults(display_gui=False)
     args = parser.parse_args()
 
-    ensure_dir(SAVE_DIR) # 動画保存用ディレクトリ
+    ensure_dir(SAVE_DIR)
 
     cap = cv.VideoCapture(CAMERA_INDEX)
     if not cap.isOpened():
@@ -85,9 +85,8 @@ def main():
     cap.set(cv.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
 
-
     print("Starting motion detection module.")
-    if not args.display_gui: # ヘッドレスモード時の初期背景設定
+    if not args.display_gui:
         print("Setting initial background automatically...")
         ret, frame_for_bg = cap.read()
         if ret:
@@ -99,6 +98,10 @@ def main():
             print("Error: Could not read frame for initial background. Exiting.")
             cap.release()
             return
+    else: # GUIモード時のメッセージ
+        print(f"GUI display enabled. Press '{chr(KEY_SET_BACKGROUND)}' in the window to set/reset background.")
+        print(f"Press 'Esc' in the window to quit.")
+
 
     last_notification_time = 0
     
@@ -107,10 +110,8 @@ def main():
     video_writer = None
     current_clip_path = None
     current_clip_filename = None
-        # 動画コーデックの指定 (MP4の場合)
-    # fourcc = cv.VideoWriter_fourcc(*'mp4v') # .mp4
-    fourcc = cv.VideoWriter_fourcc(*'XVID') # .avi (より確実性が高い場合があるが、ファイルサイズは大きめになるかも)
-                                           # XVID を使う場合は、FN_SUFFIX を .avi に変更推奨
+
+    fourcc = cv.VideoWriter_fourcc(*'mp4v') # .mp4
 
     try:
         while True:
@@ -138,52 +139,48 @@ def main():
                     cv.putText(frame, motion_factor_str, (25, FRAME_HEIGHT - 20),
                                cv.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-                # --- モーション検知 & 録画 & 通知処理 ---
                 current_time_seconds = time.time()
-                if motion_detection_enabled and motion_factor > MOTION_FACTOR_TH and \
-                   not is_recording and \
-                   (current_time_seconds - last_notification_time) > NOTIFICATION_COOLDOWN_SECONDS:
-                    
-                    print(f"Motion DETECTED! Factor: {motion_factor_str}. Starting video recording...")
-                    is_recording = True
-                    recording_start_time = current_time_seconds
-                    
-                    f_name_base = dt_now.strftime('%Y%m%d%H%M%S%f')
-                    # 動画ファイル名を生成 (fourcc に合わせて拡張子を .avi に変更も検討)
-                    current_clip_filename = f_name_base + "_" + ("motion_clip.avi" if fourcc == cv.VideoWriter_fourcc(*'XVID') else CLIP_FN_SUFFIX)
-                    current_clip_path = os.path.join(SAVE_DIR, current_clip_filename)
-                    
-                    # VideoWriterオブジェクトを作成
-                    # サイズは (FRAME_WIDTH, FRAME_HEIGHT) で指定
-                    video_writer = cv.VideoWriter(current_clip_path, fourcc, FPS_RECORD, (FRAME_WIDTH, FRAME_HEIGHT))
-                    
-                    if not video_writer.isOpened():
-                        print(f"エラー: VideoWriterのオープンに失敗しました。パス: {current_clip_path}")
-                        is_recording = False # 録画フラグをリセット
-                        video_writer = None
-                    else:
-                        print(f"Recording started: {current_clip_filename}")
-
-
+                if motion_detection_enabled and motion_factor > MOTION_FACTOR_TH:
+                    if not is_recording: # If not already recording
+                        if (current_time_seconds - last_notification_time) > NOTIFICATION_COOLDOWN_SECONDS:
+                            # Cooldown time passed, start recording
+                            print(f"Motion DETECTED! Factor: {motion_factor_str}. Starting video recording for notification...")
+                            is_recording = True
+                            recording_start_time = current_time_seconds
+                            
+                            f_name_base = dt_now.strftime('%Y%m%d%H%M%S%f')
+                            current_clip_filename = f_name_base + "_" + CLIP_FN_SUFFIX # .mp4
+                            current_clip_path = os.path.join(SAVE_DIR, current_clip_filename)
+                            
+                            video_writer = cv.VideoWriter(current_clip_path, fourcc, FPS_RECORD, (FRAME_WIDTH, FRAME_HEIGHT))
+                            
+                            if not video_writer.isOpened():
+                                print(f"Error: Failed to open VideoWriter. Path: {current_clip_path}. Please check if codec 'mp4v' is available.")
+                                is_recording = False
+                                video_writer = None
+                            else:
+                                print(f"Recording started for notification: {current_clip_filename}")
+                        else:
+                            print(f"Motion DETECTED (Factor: {motion_factor_str}) at {dt_format_string} but notification is on cooldown. No recording/sending.")
+                
                 # 録画中の処理
-                if is_recording and video_writer is not None:
-                    video_writer.write(frame) # 現在のフレームを動画に書き込む
+                if is_recording and video_writer is not None and video_writer.isOpened():
+                    # GUIが有効な場合、フレームに日付時刻を描画 (録画される映像に含めるかはお好みで)
+                    # if args.display_gui:
+                    #    cv.putText(frame, dt_format_string, (25,50), cv.FONT_HERSHEY_SIMPLEX, 1.0, (0,0,255),2)
+                    video_writer.write(frame)
                     
-                    # 録画時間が経過したかチェック
                     if (current_time_seconds - recording_start_time) >= RECORDING_DURATION_SECONDS:
                         print(f"Recording finished: {current_clip_filename}")
                         video_writer.release()
                         video_writer = None
-                        is_recording = False # 録画フラグをリセット
+                        is_recording = False
                         
-                        # --- Discordに動画クリップを通知 ---
                         print(f"Sending video clip to Discord: {current_clip_filename}")
-                        # MIMEタイプを動画用に指定 (例: "video/x-msvideo" for AVI, "video/mp4" for MP4)
-                        mime = "video/x-msvideo" if fourcc == cv.VideoWriter_fourcc(*'XVID') else "video/mp4"
-                        if send_file_to_discord_api(current_clip_path, current_clip_filename, mime_type=mime):
-                            last_notification_time = current_time_seconds # 通知成功でクールダウン開始
+                        if send_file_to_discord_api(current_clip_path, current_clip_filename, mime_type="video/mp4"):
+                            last_notification_time = current_time_seconds
                         
-                        current_clip_path = None # パスをクリア
+                        current_clip_path = None
                         current_clip_filename = None
 
 
@@ -198,7 +195,7 @@ def main():
                 
                 if key == KEY_QUIT:
                     print("Exit key pressed.")
-                    if is_recording and video_writer is not None: # 終了時に録画中なら保存
+                    if is_recording and video_writer is not None and video_writer.isOpened():
                         video_writer.release()
                         print(f"Recording stopped due to exit: {current_clip_filename if current_clip_filename else 'N/A'}")
                     break
@@ -206,15 +203,15 @@ def main():
                     avg_background = gray.copy().astype("float")
                     motion_detection_enabled = True
                     print(f"Background re-set at {dt_format_string}. Motion detection enabled.")
-            else: # ヘッドレスモード
-                if is_recording: # 録画中は少し高頻度でループ (FPS_RECORDに近づけるため)
-                    time.sleep(1.0 / (FPS_RECORD * 2)) # 録画FPSの半分の周期でスリープ (CPU負荷とのバランス)
+            else:
+                if is_recording:
+                    time.sleep(max(0, (1.0 / FPS_RECORD) - 0.01)) # 録画FPSに合わせてスリープ (微調整)
                 else:
                     time.sleep(HEADLESS_LOOP_DELAY)
 
     except KeyboardInterrupt:
         print("Interrupted by user (Ctrl+C). Exiting...")
-        if is_recording and video_writer is not None: # Ctrl+C時も録画中なら保存
+        if is_recording and video_writer is not None and video_writer.isOpened():
             video_writer.release()
             print(f"Recording stopped due to interrupt: {current_clip_filename if current_clip_filename else 'N/A'}")
     finally:
